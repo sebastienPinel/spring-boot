@@ -21,9 +21,9 @@ import com.google.devtools.ksp.isPublic
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
-import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.AUTOWIRED
-import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.CONSTRUCTOR_BINDING
+import com.google.devtools.ksp.symbol.Origin
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.NAME
+import org.springframework.boot.configurationprocessor.support.BindConstructorResolver
 
 /**
  * Resolves the [PropertyDescriptor] instances of a class annotated with
@@ -45,36 +45,15 @@ internal class PropertyDescriptorResolver(private val context: MetadataGeneratio
 		if (factoryMethod != null) {
 			return resolveJavaBean(declaration, factoryMethod)
 		}
-		val bindConstructor = findBindConstructor(declaration)
-		return if (bindConstructor != null) {
-			resolveConstructorBound(declaration, bindConstructor)
+		val constructors = declaration.getConstructors().map(::KspSourceConstructor).toList()
+		val member = declaration.parentDeclaration is KSClassDeclaration
+		val resolution = BindConstructorResolver.resolve(constructors, member)
+		return when (resolution.kind) {
+			BindConstructorResolver.Resolution.Kind.CONSTRUCTOR_BOUND ->
+				resolveConstructorBound(declaration, resolution.constructor.declaration)
+			BindConstructorResolver.Resolution.Kind.JAVA_BEAN -> resolveJavaBean(declaration)
+			BindConstructorResolver.Resolution.Kind.NONE -> emptyList()
 		}
-		else {
-			resolveJavaBean(declaration)
-		}
-	}
-
-	private fun findBindConstructor(declaration: KSClassDeclaration): KSFunctionDeclaration? {
-		val constructors = declaration.getConstructors().toList()
-		val annotated = constructors.filter { it.hasAnnotation(CONSTRUCTOR_BINDING, considerMetaAnnotations = true) }
-		if (annotated.isNotEmpty()) {
-			return annotated.singleOrNull()
-		}
-		return deduceBindConstructor(declaration, constructors)
-	}
-
-	private fun deduceBindConstructor(
-		declaration: KSClassDeclaration,
-		constructors: List<KSFunctionDeclaration>,
-	): KSFunctionDeclaration? {
-		val candidate = constructors.singleOrNull() ?: return null
-		if (candidate.parameters.isEmpty() || candidate.hasAnnotation(AUTOWIRED)) {
-			return null
-		}
-		if (declaration.parentDeclaration is KSClassDeclaration && !candidate.isPublic()) {
-			return null
-		}
-		return candidate
 	}
 
 	private fun resolveConstructorBound(
@@ -105,6 +84,7 @@ internal class PropertyDescriptorResolver(private val context: MetadataGeneratio
 		factoryMethod: KSFunctionDeclaration? = null,
 	): List<PropertyDescriptor> {
 		val descriptors = LinkedHashMap<String, PropertyDescriptor>()
+		// Kotlin properties, whose getter and mutability are exposed directly.
 		declaration.getAllProperties().filter(::isCandidate).forEach { property ->
 			val name = property.findAnnotation(NAME)?.findStringValue("value") ?: property.simpleName.asString()
 			val descriptor = PropertyDescriptor.JavaBean(
@@ -116,11 +96,72 @@ internal class PropertyDescriptorResolver(private val context: MetadataGeneratio
 			)
 			register(descriptors, descriptor, declaration)
 		}
+		// Java properties, declared through their public accessors rather than as Kotlin
+		// properties (their backing field is private, so it is not a candidate above).
+		resolveAccessorProperties(declaration, factoryMethod, descriptors)
 		return descriptors.values.toList()
 	}
 
 	private fun isCandidate(property: KSPropertyDeclaration): Boolean =
 		property.isPublic() && property.getter != null
+
+	private fun resolveAccessorProperties(
+		declaration: KSClassDeclaration,
+		factoryMethod: KSFunctionDeclaration?,
+		descriptors: MutableMap<String, PropertyDescriptor>,
+	) {
+		val functions = declaration.getAllFunctions()
+			.filter { it.isPublic() && isJavaOrigin(it) && !isFromObject(it) }
+			.toList()
+		val setters = functions.filter(::isSetter).associateBy { accessorName(it.simpleName.asString()) }
+		val fields = declaration.getAllProperties().associateBy { it.simpleName.asString() }
+		functions.filter(::isGetter).forEach { getter ->
+			val propertyName = accessorName(getter.simpleName.asString())
+			val type = getter.returnType?.resolve() ?: return@forEach
+			val field = fields[propertyName]
+			val name = (getter.findAnnotation(NAME) ?: field?.findAnnotation(NAME))?.findStringValue("value")
+				?: propertyName
+			val descriptor = PropertyDescriptor.JavaAccessor(
+				name,
+				type,
+				declaration,
+				getter,
+				setters[propertyName],
+				field,
+				factoryMethod,
+			)
+			register(descriptors, descriptor, declaration)
+		}
+	}
+
+	private fun isGetter(function: KSFunctionDeclaration): Boolean {
+		if (function.parameters.isNotEmpty() || returnsUnit(function)) {
+			return false
+		}
+		val name = function.simpleName.asString()
+		return (name.startsWith("get") && name.length > 3) || (name.startsWith("is") && name.length > 2)
+	}
+
+	private fun isSetter(function: KSFunctionDeclaration): Boolean {
+		val name = function.simpleName.asString()
+		return name.startsWith("set") && name.length > 3 && function.parameters.size == 1
+	}
+
+	private fun returnsUnit(function: KSFunctionDeclaration): Boolean =
+		function.returnType?.resolve()?.declaration?.qualifiedName?.asString() == KOTLIN_UNIT
+
+	private fun accessorName(methodName: String): String {
+		val stripped = if (methodName.startsWith("is")) methodName.substring(2) else methodName.substring(3)
+		return stripped.replaceFirstChar(Char::lowercaseChar)
+	}
+
+	private fun isJavaOrigin(function: KSFunctionDeclaration): Boolean =
+		function.origin == Origin.JAVA || function.origin == Origin.JAVA_LIB
+
+	private fun isFromObject(function: KSFunctionDeclaration): Boolean {
+		val owner = function.parentDeclaration?.qualifiedName?.asString()
+		return owner == JAVA_OBJECT || owner == KOTLIN_ANY
+	}
 
 	private fun register(
 		descriptors: MutableMap<String, PropertyDescriptor>,
@@ -138,6 +179,16 @@ internal class PropertyDescriptorResolver(private val context: MetadataGeneratio
 				declaration,
 			)
 		}
+	}
+
+	private companion object {
+
+		private const val KOTLIN_UNIT = "kotlin.Unit"
+
+		private const val KOTLIN_ANY = "kotlin.Any"
+
+		private const val JAVA_OBJECT = "java.lang.Object"
+
 	}
 
 }

@@ -585,6 +585,37 @@ class ConfigurationMetadataSymbolProcessorTests {
 		)
 	}
 
+	@Test
+	fun `java bean properties are documented`() {
+		val metadata = this.compiler.compile(
+			SourceFile(
+				"ExampleJavaProperties.java",
+				"""
+				package example;
+
+				import org.springframework.boot.context.properties.ConfigurationProperties;
+
+				@ConfigurationProperties("java-bean")
+				public class ExampleJavaProperties {
+
+					private String name = "default";
+
+					public String getName() {
+						return this.name;
+					}
+
+					public ExampleJavaProperties setName(String name) {
+						this.name = name;
+						return this;
+					}
+				}
+				""".trimIndent(),
+			),
+		)
+		assertThat(metadata.group("java-bean")?.type).isEqualTo("example.ExampleJavaProperties")
+		assertThat(metadata.property("java-bean.name")?.type).isEqualTo("java.lang.String")
+	}
+
 	private fun writeAdditionalMetadata(location: Path, content: String) {
 		val metaInf = location.resolve("META-INF").createDirectories()
 		metaInf.resolve("additional-spring-configuration-metadata.json").writeText(content.trimIndent())

@@ -18,12 +18,10 @@ package org.springframework.boot.configurationprocessor;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -46,10 +44,11 @@ import javax.lang.model.util.ElementFilter;
 import javax.tools.Diagnostic.Kind;
 
 import org.springframework.boot.configurationprocessor.metadata.ConfigurationMetadata;
+import org.springframework.boot.configurationprocessor.metadata.EndpointMetadata;
 import org.springframework.boot.configurationprocessor.metadata.InvalidConfigurationMetadataException;
 import org.springframework.boot.configurationprocessor.metadata.ItemHint;
-import org.springframework.boot.configurationprocessor.metadata.ItemIgnore;
 import org.springframework.boot.configurationprocessor.metadata.ItemMetadata;
+import org.springframework.boot.configurationprocessor.metadata.MetadataCollector;
 
 /**
  * Annotation {@link Processor} that writes meta-data file for
@@ -337,19 +336,16 @@ public class ConfigurationMetadataAnnotationProcessor extends AbstractProcessor 
 		if (endpointId == null || endpointId.isEmpty()) {
 			return; // Can't process that endpoint
 		}
-		String endpointKey = ItemMetadata.newItemMetadataPrefix("management.endpoint.", endpointId);
-		String defaultAccess = elementValues.getOrDefault("defaultAccess", "unrestricted")
-			.toString()
-			.toLowerCase(Locale.ENGLISH);
 		String type = this.metadataEnv.getTypeUtils().getQualifiedName(element);
-		this.metadataCollector.addIfAbsent(ItemMetadata.newGroup(endpointKey, type, type, null));
-		ItemMetadata accessProperty = ItemMetadata.newProperty(endpointKey, "access", endpointAccessEnum(), type, null,
-				"Permitted level of access for the %s endpoint.".formatted(endpointId), defaultAccess, null);
-		this.metadataCollector.add(accessProperty,
+		Object defaultAccessValue = elementValues.get("defaultAccess");
+		EndpointMetadata endpoint = EndpointMetadata.of(endpointId, type, endpointAccessEnum(),
+				(defaultAccessValue != null) ? defaultAccessValue.toString() : null, hasMainReadOperation(element));
+		String defaultAccess = endpoint.getDefaultAccess();
+		this.metadataCollector.addIfAbsent(endpoint.getGroup());
+		this.metadataCollector.add(endpoint.getAccessProperty(),
 				(existing) -> checkDefaultAccessValueMatchesExisting(existing, defaultAccess, type));
-		if (hasMainReadOperation(element)) {
-			this.metadataCollector.addIfAbsent(ItemMetadata.newProperty(endpointKey, "cache.time-to-live",
-					Duration.class.getName(), type, null, "Maximum time that a response can be cached.", "0ms", null));
+		if (endpoint.getCacheProperty() != null) {
+			this.metadataCollector.addIfAbsent(endpoint.getCacheProperty());
 		}
 	}
 
@@ -395,7 +391,7 @@ public class ConfigurationMetadataAnnotationProcessor extends AbstractProcessor 
 		for (TypeElement sourceType : this.metadataCollectors.getSourceTypes()) {
 			ConfigurationMetadata metadata = this.metadataCollectors.getMetadataCollector(sourceType).getMetadata();
 			metadata = mergeAdditionalMetadata(metadata, () -> this.metadataStore.readAdditionalMetadata(sourceType));
-			removeIgnored(metadata);
+			metadata.removeIgnored();
 			if (!metadata.getItems().isEmpty()) {
 				this.metadataStore.writeMetadata(metadata, sourceType);
 			}
@@ -405,7 +401,7 @@ public class ConfigurationMetadataAnnotationProcessor extends AbstractProcessor 
 	protected ConfigurationMetadata writeMetadata() throws Exception {
 		ConfigurationMetadata metadata = this.metadataCollector.getMetadata();
 		metadata = mergeAdditionalMetadata(metadata, () -> this.metadataStore.readAdditionalMetadata());
-		removeIgnored(metadata);
+		metadata.removeIgnored();
 		if (!metadata.getItems().isEmpty()) {
 			this.metadataStore.writeMetadata(metadata);
 			return metadata;
@@ -413,20 +409,12 @@ public class ConfigurationMetadataAnnotationProcessor extends AbstractProcessor 
 		return null;
 	}
 
-	private void removeIgnored(ConfigurationMetadata metadata) {
-		for (ItemIgnore itemIgnore : metadata.getIgnored()) {
-			metadata.removeMetadata(itemIgnore.getType(), itemIgnore.getName());
-		}
-	}
-
 	private ConfigurationMetadata mergeAdditionalMetadata(ConfigurationMetadata metadata,
 			Supplier<ConfigurationMetadata> additionalMetadataSupplier) {
 		try {
 			ConfigurationMetadata additionalMetadata = additionalMetadataSupplier.get();
 			if (additionalMetadata != null) {
-				ConfigurationMetadata merged = new ConfigurationMetadata(metadata);
-				merged.merge(additionalMetadata);
-				return merged;
+				return metadata.mergedWith(additionalMetadata);
 			}
 			return metadata;
 		}

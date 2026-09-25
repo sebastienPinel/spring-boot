@@ -27,6 +27,7 @@ import org.springframework.boot.configurationprocessor.ksp.ConfigurationProperti
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.JAVA_DEPRECATED
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.KOTLIN_DEPRECATED
 import org.springframework.boot.configurationprocessor.metadata.ItemDeprecation
+import org.springframework.boot.configurationprocessor.support.ExcludedTypes
 
 /**
  * Utilities shared by the components that turn Kotlin declarations into configuration
@@ -60,7 +61,7 @@ internal class MetadataGenerationContext(
 	 */
 	fun isExcluded(type: KSType): Boolean {
 		val name = (type.declaration as? KSClassDeclaration)?.let { typeNames.resolve(it) } ?: return false
-		return TYPE_EXCLUDES.contains(name)
+		return ExcludedTypes.isExcluded(name)
 	}
 
 	/**
@@ -140,27 +141,6 @@ internal class MetadataGenerationContext(
 			"kotlin.collections.Map",
 			"kotlin.collections.MutableCollection",
 			"kotlin.collections.MutableMap",
-		)
-
-		/**
-		 * Types that are never treated as a nested group or a property. Kept in sync with
-		 * the Java annotation processor.
-		 */
-		private val TYPE_EXCLUDES = setOf(
-			"com.zaxxer.hikari.IConnectionCustomizer",
-			"groovy.lang.MetaClass",
-			"groovy.text.markup.MarkupTemplateEngine",
-			"java.io.Writer",
-			"java.io.PrintWriter",
-			"java.lang.ClassLoader",
-			"java.util.concurrent.ThreadFactory",
-			"jakarta.jms.XAConnectionFactory",
-			"javax.sql.DataSource",
-			"javax.sql.XADataSource",
-			"org.apache.tomcat.jdbc.pool.PoolConfiguration",
-			"org.apache.tomcat.jdbc.pool.Validator",
-			"org.flywaydb.core.api.callback.FlywayCallback",
-			"org.flywaydb.core.api.resolver.MigrationResolver",
 		)
 
 	}

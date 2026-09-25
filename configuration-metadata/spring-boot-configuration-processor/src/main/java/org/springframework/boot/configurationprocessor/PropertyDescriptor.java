@@ -19,7 +19,6 @@ package org.springframework.boot.configurationprocessor;
 import java.util.Arrays;
 
 import javax.lang.model.element.Element;
-import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
@@ -28,6 +27,8 @@ import org.springframework.boot.configurationprocessor.metadata.ConfigurationMet
 import org.springframework.boot.configurationprocessor.metadata.ItemDeprecation;
 import org.springframework.boot.configurationprocessor.metadata.ItemHint;
 import org.springframework.boot.configurationprocessor.metadata.ItemMetadata;
+import org.springframework.boot.configurationprocessor.support.NestedTypeDetector;
+import org.springframework.boot.configurationprocessor.support.SourceType;
 
 /**
  * Description of a property that can be candidate for metadata generation.
@@ -131,15 +132,12 @@ abstract class PropertyDescriptor {
 	 */
 	boolean isNested(MetadataGenerationEnvironment environment) {
 		Element typeElement = environment.getTypeUtils().asElement(getType());
-		if (!(typeElement instanceof TypeElement) || typeElement.getKind() == ElementKind.ENUM
-				|| environment.getConfigurationPropertiesAnnotation(getGetter()) != null) {
-			return false;
-		}
-		if (isMarkedAsNested(environment)) {
-			return true;
-		}
-		return !isCyclePresent(typeElement, getDeclaringElement())
-				&& isParentTheSame(environment, typeElement, getDeclaringElement());
+		SourceType nestedType = (typeElement instanceof TypeElement classType)
+				? new ElementSourceType(classType, environment.getTypeUtils()) : null;
+		SourceType declaringType = new ElementSourceType(getDeclaringElement(), environment.getTypeUtils());
+		boolean hasConfigurationProperties = environment.getConfigurationPropertiesAnnotation(getGetter()) != null;
+		return NestedTypeDetector.isNested(nestedType, declaringType, hasConfigurationProperties,
+				isMarkedAsNested(environment));
 	}
 
 	/**
@@ -149,39 +147,6 @@ abstract class PropertyDescriptor {
 	 * @return if the property has been marked as nested
 	 */
 	protected abstract boolean isMarkedAsNested(MetadataGenerationEnvironment environment);
-
-	private boolean isCyclePresent(Element returnType, Element element) {
-		if (!(element.getEnclosingElement() instanceof TypeElement)) {
-			return false;
-		}
-		if (element.getEnclosingElement().equals(returnType)) {
-			return true;
-		}
-		return isCyclePresent(returnType, element.getEnclosingElement());
-	}
-
-	private boolean isParentTheSame(MetadataGenerationEnvironment environment, Element returnType,
-			TypeElement element) {
-		if (returnType == null || element == null) {
-			return false;
-		}
-		returnType = getTopLevelType(returnType);
-		Element candidate = element;
-		while (candidate instanceof TypeElement) {
-			if (returnType.equals(getTopLevelType(candidate))) {
-				return true;
-			}
-			candidate = environment.getTypeUtils().asElement(((TypeElement) candidate).getSuperclass());
-		}
-		return false;
-	}
-
-	private Element getTopLevelType(Element element) {
-		if (!(element.getEnclosingElement() instanceof TypeElement)) {
-			return element;
-		}
-		return getTopLevelType(element.getEnclosingElement());
-	}
 
 	private ItemMetadata resolveItemMetadataGroup(String prefix, MetadataGenerationEnvironment environment) {
 		Element propertyElement = environment.getTypeUtils().asElement(getType());

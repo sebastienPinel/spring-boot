@@ -45,6 +45,7 @@ import org.springframework.boot.configurationprocessor.ConfigurationPropertiesSo
 import org.springframework.boot.configurationprocessor.fieldvalues.FieldValuesParser;
 import org.springframework.boot.configurationprocessor.fieldvalues.javac.JavaCompilerFieldValuesParser;
 import org.springframework.boot.configurationprocessor.metadata.ItemDeprecation;
+import org.springframework.boot.configurationprocessor.support.ExcludedTypes;
 
 /**
  * Provide utilities to detect and validate configuration properties.
@@ -56,13 +57,6 @@ import org.springframework.boot.configurationprocessor.metadata.ItemDeprecation;
 class MetadataGenerationEnvironment {
 
 	private static final String NULLABLE_ANNOTATION = "org.jspecify.annotations.Nullable";
-
-	private static final Set<String> TYPE_EXCLUDES = Set.of("com.zaxxer.hikari.IConnectionCustomizer",
-			"groovy.lang.MetaClass", "groovy.text.markup.MarkupTemplateEngine", "java.io.Writer", "java.io.PrintWriter",
-			"java.lang.ClassLoader", "java.util.concurrent.ThreadFactory", "jakarta.jms.XAConnectionFactory",
-			"javax.sql.DataSource", "javax.sql.XADataSource", "org.apache.tomcat.jdbc.pool.PoolConfiguration",
-			"org.apache.tomcat.jdbc.pool.Validator", "org.flywaydb.core.api.callback.FlywayCallback",
-			"org.flywaydb.core.api.resolver.MigrationResolver");
 
 	private static final Set<String> DEPRECATION_EXCLUDES = Set.of(
 			"org.apache.commons.dbcp2.BasicDataSource#getPassword",
@@ -177,7 +171,7 @@ class MetadataGenerationEnvironment {
 		if (typeName.endsWith("[]")) {
 			typeName = typeName.substring(0, typeName.length() - 2);
 		}
-		return TYPE_EXCLUDES.contains(typeName);
+		return ExcludedTypes.isExcluded(typeName);
 	}
 
 	boolean isDeprecated(Element element) {

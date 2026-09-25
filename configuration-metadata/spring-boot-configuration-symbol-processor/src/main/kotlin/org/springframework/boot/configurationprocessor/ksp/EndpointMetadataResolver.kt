@@ -23,11 +23,16 @@ import com.google.devtools.ksp.symbol.KSType
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.ENDPOINT_ACCESS_ENUM
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.ENDPOINT_ANNOTATIONS
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.READ_OPERATION
-import org.springframework.boot.configurationprocessor.metadata.ItemMetadata
+import org.springframework.boot.configurationprocessor.metadata.EndpointMetadata
 
 /**
  * Resolves the metadata contributed by a type annotated with one of the actuator endpoint
  * annotations.
+ *
+ * The shape of the metadata is built by the shared [EndpointMetadata] factory so that it
+ * stays identical to the one produced by the Java annotation processor. This resolver only
+ * deals with the Kotlin specifics: locating the endpoint annotation, reading its
+ * attributes and detecting the main read operation.
  *
  * @author Areg Iazychian
  * @since 4.2.0
@@ -42,44 +47,16 @@ internal class EndpointMetadataResolver(private val context: MetadataGenerationC
 		val annotation = ENDPOINT_ANNOTATIONS.firstNotNullOfOrNull { declaration.findAnnotation(it) }
 			?: return null
 		val id = annotation.findStringValue("id") ?: return null
-		val key = ItemMetadata.newItemMetadataPrefix(ENDPOINT_PREFIX, id)
 		val type = this.context.typeNames.resolve(declaration)
-		val defaultAccess = defaultAccessOf(annotation.findValue("defaultAccess"))
-		val items = mutableListOf(
-			ItemMetadata.newProperty(
-				key,
-				"access",
-				ENDPOINT_ACCESS_ENUM,
-				type,
-				null,
-				"Permitted level of access for the $id endpoint.",
-				defaultAccess,
-				null,
-			),
-		)
-		if (hasMainReadOperation(declaration)) {
-			items += ItemMetadata.newProperty(
-				key,
-				"cache.time-to-live",
-				"java.time.Duration",
-				type,
-				null,
-				"Maximum time that a response can be cached.",
-				"0ms",
-				null,
-			)
-		}
-		return EndpointMetadata(ItemMetadata.newGroup(key, type, type, null), items, defaultAccess)
+		val defaultAccess = accessNameOf(annotation.findValue("defaultAccess"))
+		return EndpointMetadata.of(id, type, ENDPOINT_ACCESS_ENUM, defaultAccess, hasMainReadOperation(declaration))
 	}
 
-	private fun defaultAccessOf(value: Any?): String {
-		val name = when (value) {
-			null -> DEFAULT_ACCESS
-			is KSType -> value.declaration.simpleName.asString()
-			is KSClassDeclaration -> value.simpleName.asString()
-			else -> value.toString()
-		}
-		return name.lowercase()
+	private fun accessNameOf(value: Any?): String? = when (value) {
+		null -> null
+		is KSType -> value.declaration.simpleName.asString()
+		is KSClassDeclaration -> value.simpleName.asString()
+		else -> value.toString()
 	}
 
 	private fun hasMainReadOperation(declaration: KSClassDeclaration): Boolean =
@@ -93,19 +70,7 @@ internal class EndpointMetadataResolver(private val context: MetadataGenerationC
 	private fun hasNoMandatoryParameters(function: KSFunctionDeclaration): Boolean =
 		function.parameters.all { it.type.resolve().isMarkedNullable || it.hasDefault }
 
-	/**
-	 * The metadata contributed by a single endpoint.
-	 *
-	 * @author Areg Iazychian
-	 * @since 4.2.0
-	 */
-	data class EndpointMetadata(val group: ItemMetadata, val properties: List<ItemMetadata>, val defaultAccess: String)
-
 	private companion object {
-
-		private const val ENDPOINT_PREFIX = "management.endpoint."
-
-		private const val DEFAULT_ACCESS = "unrestricted"
 
 		private const val KOTLIN_UNIT = "kotlin.Unit"
 

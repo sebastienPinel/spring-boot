@@ -34,6 +34,7 @@ import org.springframework.boot.configurationprocessor.json.JSONException
 import org.springframework.boot.configurationprocessor.metadata.ConfigurationMetadata
 import org.springframework.boot.configurationprocessor.metadata.ItemMetadata
 import org.springframework.boot.configurationprocessor.metadata.JsonMarshaller
+import org.springframework.boot.configurationprocessor.metadata.MetadataCollector
 import java.io.File
 import java.io.IOException
 
@@ -59,11 +60,11 @@ class ConfigurationMetadataSymbolProcessor(
 
 	private val endpointMetadataResolver = EndpointMetadataResolver(this.context)
 
-	private val metadata = ConfigurationMetadata()
+	private val metadataCollector = MetadataCollector({ _ -> false }, null)
 
 	private val sourceFiles = LinkedHashSet<KSFile>()
 
-	private val sourceMetadata = LinkedHashMap<String, ConfigurationMetadata>()
+	private val sourceMetadata = LinkedHashMap<String, MetadataCollector>()
 
 	override fun process(resolver: Resolver): List<KSAnnotated> {
 		val symbols = resolver.getSymbolsWithAnnotation(CONFIGURATION_PROPERTIES).toList()
@@ -82,8 +83,8 @@ class ConfigurationMetadataSymbolProcessor(
 
 	override fun finish() {
 		writeSourceMetadata()
-		val metadata = mergeAdditionalMetadata()
-		removeIgnored(metadata)
+		val metadata = mergeAdditionalMetadata(this.metadataCollector.getMetadata())
+		metadata.removeIgnored()
 		if (metadata.items.isEmpty()) {
 			return
 		}
@@ -91,8 +92,9 @@ class ConfigurationMetadataSymbolProcessor(
 	}
 
 	private fun writeSourceMetadata() {
-		this.sourceMetadata.forEach { (type, metadata) ->
-			removeIgnored(metadata)
+		this.sourceMetadata.forEach { (type, collector) ->
+			val metadata = collector.getMetadata()
+			metadata.removeIgnored()
 			if (metadata.items.isNotEmpty()) {
 				write(metadata, SOURCE_METADATA_PATH + type)
 			}
@@ -112,8 +114,8 @@ class ConfigurationMetadataSymbolProcessor(
 	 */
 	private fun processConfigurationPropertiesSource(declaration: KSClassDeclaration) {
 		val type = this.context.typeNames.resolve(declaration)
-		val metadata = this.sourceMetadata.getOrPut(type) { ConfigurationMetadata() }
-		processType("", declaration, ArrayDeque(), target = metadata)
+		val collector = this.sourceMetadata.getOrPut(type) { MetadataCollector({ _ -> false }, null) }
+		processType("", declaration, ArrayDeque(), target = collector)
 	}
 
 	/**
@@ -123,11 +125,9 @@ class ConfigurationMetadataSymbolProcessor(
 	 * to look into have to be provided using the
 	 * `org.springframework.boot.configurationprocessor.additionalMetadataLocations` option.
 	 */
-	private fun mergeAdditionalMetadata(): ConfigurationMetadata {
-		val additional = readAdditionalMetadata() ?: return this.metadata
-		val merged = ConfigurationMetadata(this.metadata)
-		merged.merge(additional)
-		return merged
+	private fun mergeAdditionalMetadata(metadata: ConfigurationMetadata): ConfigurationMetadata {
+		val additional = readAdditionalMetadata() ?: return metadata
+		return metadata.mergedWith(additional)
 	}
 
 	private fun readAdditionalMetadata(): ConfigurationMetadata? {
@@ -150,15 +150,11 @@ class ConfigurationMetadataSymbolProcessor(
 		}
 	}
 
-	private fun removeIgnored(metadata: ConfigurationMetadata) {
-		metadata.ignored.forEach { metadata.removeMetadata(it.type, it.name) }
-	}
-
 	private fun processConfigurationProperties(declaration: KSClassDeclaration) {
 		val annotation = declaration.findAnnotation(CONFIGURATION_PROPERTIES) ?: return
 		val prefix = prefixOf(annotation)
 		val type = this.context.typeNames.resolve(declaration)
-		this.metadata.add(ItemMetadata.newGroup(prefix, type, type, null))
+		this.metadataCollector.add(ItemMetadata.newGroup(prefix, type, type, null))
 		processType(prefix, declaration, ArrayDeque())
 	}
 
@@ -184,11 +180,11 @@ class ConfigurationMetadataSymbolProcessor(
 			this.context.typeNames.resolve(owner),
 			sourceMethod(function),
 		)
-		if (hasSimilarGroup(group)) {
+		if (this.metadataCollector.hasSimilarGroup(group)) {
 			this.context.logger.error("Duplicate @ConfigurationProperties definition for prefix '$prefix'", function)
 			return
 		}
-		this.metadata.add(group)
+		this.metadataCollector.add(group)
 		function.containingFile?.let(this.sourceFiles::add)
 		processType(prefix, declaration, ArrayDeque(), function)
 	}
@@ -198,7 +194,7 @@ class ConfigurationMetadataSymbolProcessor(
 		declaration: KSClassDeclaration,
 		seen: ArrayDeque<String>,
 		factoryMethod: KSFunctionDeclaration? = null,
-		target: ConfigurationMetadata = this.metadata,
+		target: MetadataCollector = this.metadataCollector,
 	) {
 		val type = this.context.typeNames.resolve(declaration)
 		if (seen.contains(type)) {
@@ -207,7 +203,7 @@ class ConfigurationMetadataSymbolProcessor(
 		seen.addLast(type)
 		declaration.containingFile?.let(this.sourceFiles::add)
 		this.propertyDescriptorResolver.resolve(declaration, factoryMethod).forEach { descriptor ->
-			descriptor.toItemMetadata(prefix, this.context)?.let(target::add)
+			descriptor.toItemMetadata(prefix, this.context)?.let { target.add(it) }
 			if (descriptor.isNested(this.context)) {
 				processNestedType(prefix, descriptor, seen, factoryMethod, target)
 			}
@@ -220,7 +216,7 @@ class ConfigurationMetadataSymbolProcessor(
 		descriptor: PropertyDescriptor,
 		seen: ArrayDeque<String>,
 		factoryMethod: KSFunctionDeclaration?,
-		target: ConfigurationMetadata,
+		target: MetadataCollector,
 	) {
 		val nestedType = descriptor.type.declaration as? KSClassDeclaration ?: return
 		val nestedPrefix = ConfigurationMetadata.nestedPrefix(prefix, descriptor.name)
@@ -233,34 +229,25 @@ class ConfigurationMetadataSymbolProcessor(
 	private fun processEndpoint(declaration: KSClassDeclaration) {
 		val endpoint = this.endpointMetadataResolver.resolve(declaration) ?: return
 		declaration.containingFile?.let(this.sourceFiles::add)
-		this.metadata.addIfMissing(endpoint.group)
+		this.metadataCollector.addIfAbsent(endpoint.group)
 		endpoint.properties.forEach { property -> addEndpointProperty(property, declaration) }
 	}
 
 	private fun addEndpointProperty(property: ItemMetadata, declaration: KSClassDeclaration) {
-		val existing = this.metadata.items.firstOrNull {
-			it.isOfItemType(ItemMetadata.ItemType.PROPERTY) && it.name == property.name
-		}
-		if (existing == null) {
-			this.metadata.add(property)
-			return
-		}
-		if (existing.defaultValue != property.defaultValue) {
-			this.context.logger.error(
-				"Existing property '${existing.name}' from type ${existing.sourceType} has a conflicting value. " +
-					"Existing value: ${existing.defaultValue}, new value from type ${property.sourceType}: " +
-					"${property.defaultValue}",
-				declaration,
-			)
+		this.metadataCollector.add(property) { existing ->
+			if (existing.defaultValue != property.defaultValue) {
+				this.context.logger.error(
+					"Existing property '${existing.name}' from type ${existing.sourceType} has a conflicting value. " +
+						"Existing value: ${existing.defaultValue}, new value from type ${property.sourceType}: " +
+						"${property.defaultValue}",
+					declaration,
+				)
+			}
 		}
 	}
 
 	private fun prefixOf(annotation: KSAnnotation): String =
 		annotation.findStringValue("prefix") ?: annotation.findStringValue("value") ?: ""
-
-	private fun hasSimilarGroup(group: ItemMetadata): Boolean = this.metadata.items.any {
-		it.isOfItemType(ItemMetadata.ItemType.GROUP) && it.name == group.name && it.type == group.type
-	}
 
 	private fun sourceMethod(function: KSFunctionDeclaration): String {
 		val parameters = function.parameters.joinToString(separator = ",") {

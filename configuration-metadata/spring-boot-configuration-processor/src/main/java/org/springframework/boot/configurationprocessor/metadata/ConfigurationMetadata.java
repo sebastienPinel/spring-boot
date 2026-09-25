@@ -106,6 +106,16 @@ public class ConfigurationMetadata {
 	}
 
 	/**
+	 * Remove the meta-data of every item that has been explicitly ignored.
+	 * @since 4.2.0
+	 */
+	public void removeIgnored() {
+		for (ItemIgnore itemIgnore : getIgnored()) {
+			removeMetadata(itemIgnore.getType(), itemIgnore.getName());
+		}
+	}
+
+	/**
 	 * Merge the content from another {@link ConfigurationMetadata}.
 	 * @param metadata the {@link ConfigurationMetadata} instance to merge
 	 */
@@ -119,6 +129,19 @@ public class ConfigurationMetadata {
 		for (ItemIgnore itemIgnore : metadata.getIgnored()) {
 			add(itemIgnore);
 		}
+	}
+
+	/**
+	 * Return a new {@link ConfigurationMetadata} that is a copy of this metadata merged
+	 * with the content of the given additional metadata.
+	 * @param additional the additional metadata to merge
+	 * @return a new merged {@link ConfigurationMetadata}
+	 * @since 4.2.0
+	 */
+	public ConfigurationMetadata mergedWith(ConfigurationMetadata additional) {
+		ConfigurationMetadata merged = new ConfigurationMetadata(this);
+		merged.merge(additional);
+		return merged;
 	}
 
 	/**

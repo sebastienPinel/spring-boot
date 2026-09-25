@@ -16,7 +16,6 @@
 
 package org.springframework.boot.configurationprocessor.ksp
 
-import com.google.devtools.ksp.symbol.ClassKind
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSFunctionDeclaration
@@ -28,6 +27,7 @@ import org.springframework.boot.configurationprocessor.ksp.ConfigurationProperti
 import org.springframework.boot.configurationprocessor.ksp.ConfigurationPropertiesAnnotations.NESTED_CONFIGURATION_PROPERTY
 import org.springframework.boot.configurationprocessor.metadata.ConfigurationMetadata
 import org.springframework.boot.configurationprocessor.metadata.ItemMetadata
+import org.springframework.boot.configurationprocessor.support.NestedTypeDetector
 
 /**
  * Description of a Kotlin declaration that is a candidate for metadata generation.
@@ -79,17 +79,12 @@ internal sealed class PropertyDescriptor(
 	 * Return whether this property is a nested group of properties.
 	 */
 	fun isNested(context: MetadataGenerationContext): Boolean {
-		val typeDeclaration = type.declaration as? KSClassDeclaration ?: return false
-		if (typeDeclaration.classKind == ClassKind.ENUM_CLASS || typeDeclaration.classKind == ClassKind.ENUM_ENTRY) {
-			return false
-		}
-		if (annotatedElements.any { it.hasAnnotation(CONFIGURATION_PROPERTIES) }) {
-			return false
-		}
-		if (annotatedElements.any { it.hasAnnotation(NESTED_CONFIGURATION_PROPERTY) }) {
-			return true
-		}
-		return !isCyclePresent(typeDeclaration, context) && hasSameTopLevelType(typeDeclaration, context)
+		val typeDeclaration = type.declaration as? KSClassDeclaration
+		val nestedType = typeDeclaration?.let { DeclarationSourceType(it, context.typeNames) }
+		val declaringSourceType = DeclarationSourceType(declaringType, context.typeNames)
+		val hasConfigurationProperties = annotatedElements.any { it.hasAnnotation(CONFIGURATION_PROPERTIES) }
+		val markedAsNested = annotatedElements.any { it.hasAnnotation(NESTED_CONFIGURATION_PROPERTY) }
+		return NestedTypeDetector.isNested(nestedType, declaringSourceType, hasConfigurationProperties, markedAsNested)
 	}
 
 	/**
@@ -146,46 +141,6 @@ internal sealed class PropertyDescriptor(
 		}
 		return "get" + name.replaceFirstChar(Char::uppercaseChar) + "()"
 	}
-
-	private fun isCyclePresent(typeDeclaration: KSClassDeclaration, context: MetadataGenerationContext): Boolean {
-		val target = context.typeNames.resolve(typeDeclaration)
-		var candidate = declaringType.parentDeclaration
-		while (candidate is KSClassDeclaration) {
-			if (context.typeNames.resolve(candidate) == target) {
-				return true
-			}
-			candidate = candidate.parentDeclaration
-		}
-		return false
-	}
-
-	private fun hasSameTopLevelType(
-		typeDeclaration: KSClassDeclaration,
-		context: MetadataGenerationContext,
-	): Boolean {
-		val target = context.typeNames.resolve(topLevelType(typeDeclaration))
-		var candidate: KSClassDeclaration? = declaringType
-		while (candidate != null) {
-			if (context.typeNames.resolve(topLevelType(candidate)) == target) {
-				return true
-			}
-			candidate = candidate.superClassDeclaration()
-		}
-		return false
-	}
-
-	private fun topLevelType(declaration: KSClassDeclaration): KSClassDeclaration {
-		var candidate = declaration
-		while (candidate.parentDeclaration is KSClassDeclaration) {
-			candidate = candidate.parentDeclaration as KSClassDeclaration
-		}
-		return candidate
-	}
-
-	private fun KSClassDeclaration.superClassDeclaration(): KSClassDeclaration? = superTypes
-		.map { it.resolve().declaration }
-		.filterIsInstance<KSClassDeclaration>()
-		.firstOrNull { it.classKind == ClassKind.CLASS && it.qualifiedName?.asString() != KOTLIN_ANY }
 
 	/**
 	 * A [PropertyDescriptor] for a parameter of the constructor used for binding.
@@ -255,11 +210,47 @@ internal sealed class PropertyDescriptor(
 
 	}
 
+	/**
+	 * A [PropertyDescriptor] for a JavaBean property that is declared through its public
+	 * accessors (a `getX`/`isX` getter and an optional `setX` setter) rather than as a
+	 * Kotlin property. This is how the properties of a Java `@ConfigurationProperties`
+	 * type are seen through KSP, whose backing field is private.
+	 */
+	class JavaAccessor(
+		name: String,
+		type: KSType,
+		declaringType: KSClassDeclaration,
+		private val getter: KSFunctionDeclaration,
+		private val setter: KSFunctionDeclaration?,
+		private val field: KSPropertyDeclaration?,
+		private val factoryMethod: KSFunctionDeclaration? = null,
+	) : PropertyDescriptor(name, type, declaringType) {
+
+		override val annotatedElements: List<KSAnnotated> = listOfNotNull(this.getter, this.setter, this.field)
+
+		override val deprecationElements: List<KSAnnotated>
+			get() = annotatedElements + listOfNotNull(this.factoryMethod)
+
+		override fun isProperty(context: MetadataGenerationContext): Boolean {
+			if (context.isExcluded(type)) {
+				return false
+			}
+			return this.setter != null || context.isCollectionOrMap(type)
+		}
+
+		// KSP does not expose field initializers, see google/ksp#1868
+		override fun defaultValue(context: MetadataGenerationContext): Any? = null
+
+		override fun description(context: MetadataGenerationContext): String? =
+			context.documentation(this.field) ?: context.documentation(this.getter)
+
+		override fun sourceMethod(): String = "${this.getter.simpleName.asString()}()"
+
+	}
+
 	private companion object {
 
 		private const val IS_PREFIX = "is"
-
-		private const val KOTLIN_ANY = "kotlin.Any"
 
 	}
 

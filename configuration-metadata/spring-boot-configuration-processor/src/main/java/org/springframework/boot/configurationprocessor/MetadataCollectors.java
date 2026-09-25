@@ -27,6 +27,7 @@ import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
 
 import org.springframework.boot.configurationprocessor.metadata.ItemMetadata;
+import org.springframework.boot.configurationprocessor.metadata.MetadataCollector;
 
 /**
  * Container for {@link MetadataCollector}. Usually, either metadata for the whole module

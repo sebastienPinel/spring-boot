@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package org.springframework.boot.configurationprocessor;
+package org.springframework.boot.configurationprocessor.metadata;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -22,20 +22,22 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
-import org.springframework.boot.configurationprocessor.metadata.ConfigurationMetadata;
-import org.springframework.boot.configurationprocessor.metadata.ItemHint;
-import org.springframework.boot.configurationprocessor.metadata.ItemMetadata;
-
 /**
- * Used by {@link ConfigurationMetadataAnnotationProcessor} to collect
- * {@link ConfigurationMetadata}.
+ * Collects {@link ConfigurationMetadata} while a processor runs, deferring the production
+ * of the final metadata (and the optional merge of the metadata of a previous build) until
+ * {@link #getMetadata()} is called.
+ * <p>
+ * It operates purely on the metadata model, so it is shared by both the
+ * {@code javax.lang.model} annotation processor and the Kotlin Symbol Processing (KSP)
+ * processor.
  *
  * @author Andy Wilkinson
  * @author Kris De Volder
  * @author Moritz Halbritter
  * @author Stephane Nicoll
+ * @since 4.2.0
  */
-class MetadataCollector {
+public final class MetadataCollector {
 
 	private final Predicate<ItemMetadata> mergeRequired;
 
@@ -46,20 +48,20 @@ class MetadataCollector {
 	private final Set<ItemHint> metadataHints = new LinkedHashSet<>();
 
 	/**
-	 * Creates a new {@code MetadataProcessor} instance.
+	 * Creates a new {@code MetadataCollector} instance.
 	 * @param mergeRequired specify whether an item can be merged
 	 * @param previousMetadata any previous metadata or {@code null}
 	 */
-	MetadataCollector(Predicate<ItemMetadata> mergeRequired, ConfigurationMetadata previousMetadata) {
+	public MetadataCollector(Predicate<ItemMetadata> mergeRequired, ConfigurationMetadata previousMetadata) {
 		this.mergeRequired = mergeRequired;
 		this.previousMetadata = previousMetadata;
 	}
 
-	void add(ItemMetadata metadata) {
+	public void add(ItemMetadata metadata) {
 		this.metadataItems.add(metadata);
 	}
 
-	void add(ItemMetadata metadata, Consumer<ItemMetadata> onConflict) {
+	public void add(ItemMetadata metadata, Consumer<ItemMetadata> onConflict) {
 		ItemMetadata existing = find(metadata.getName());
 		if (existing != null) {
 			onConflict.accept(existing);
@@ -68,7 +70,7 @@ class MetadataCollector {
 		add(metadata);
 	}
 
-	boolean addIfAbsent(ItemMetadata metadata) {
+	public boolean addIfAbsent(ItemMetadata metadata) {
 		ItemMetadata existing = find(metadata.getName());
 		if (existing != null) {
 			return false;
@@ -77,11 +79,11 @@ class MetadataCollector {
 		return true;
 	}
 
-	void add(ItemHint itemHint) {
+	public void add(ItemHint itemHint) {
 		this.metadataHints.add(itemHint);
 	}
 
-	boolean hasSimilarGroup(ItemMetadata metadata) {
+	public boolean hasSimilarGroup(ItemMetadata metadata) {
 		if (!metadata.isOfItemType(ItemMetadata.ItemType.GROUP)) {
 			throw new IllegalStateException("item " + metadata + " must be a group");
 		}
@@ -94,7 +96,7 @@ class MetadataCollector {
 		return false;
 	}
 
-	ConfigurationMetadata getMetadata() {
+	public ConfigurationMetadata getMetadata() {
 		ConfigurationMetadata metadata = new ConfigurationMetadata();
 		for (ItemMetadata item : this.metadataItems) {
 			metadata.add(item);
